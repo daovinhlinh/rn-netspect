@@ -1,0 +1,22 @@
+{
+  // Emit config. `tsconfig.json` stays the typecheck config (noEmit) so `yarn typecheck`
+  // keeps running under the same `moduleResolution: "bundler"` a consumer's bundler uses.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": "src",
+    "declaration": true,
+    // Point maps at the shipped `src`, so a consumer's debugger and go-to-definition land
+    // on real source rather than on generated output.
+    "declarationMap": true,
+    "sourceMap": true,
+    // CommonJS, not ESM. React Native's jest preset does not transform node_modules, so an
+    // ESM build would fail any consumer whose test suite touches this package. Metro reads
+    // CJS without complaint, so there is nothing to gain from ESM here.
+    "module": "commonjs",
+    // Required: "bundler" is rejected outright when the emit target is commonjs.
+    "moduleResolution": "node"
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
+}
