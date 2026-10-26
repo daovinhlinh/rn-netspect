@@ -46,6 +46,7 @@ keep the clean `node_modules` graph:
 // metro.config.js
 const path = require('path');
 const NETSPECT = path.resolve(__dirname, '../rn-netspect');
+const NETSPECT_PKG = 'rn-netspect';
 
 // Opt in with NETSPECT_LOCAL=1. Every piece below is required for an out-of-tree source
 // directory; see the inline notes.
@@ -53,13 +54,30 @@ const localOverride = process.env.NETSPECT_LOCAL
   ? {
       watchFolders: [NETSPECT],
       resolver: {
+        // This, not `extraNodeModules`, is what redirects the package. `extraNodeModules`
+        // is only a *fallback* — Metro consults it after normal node_modules resolution
+        // fails. Once rn-netspect is a real dependency that lookup succeeds, so an
+        // `extraNodeModules: { 'rn-netspect': NETSPECT }` entry silently does nothing and
+        // you keep bundling the installed copy while believing you are editing live.
+        resolveRequest: (context, moduleName, platform) => {
+          if (moduleName === NETSPECT_PKG || moduleName.startsWith(`${NETSPECT_PKG}/`)) {
+            const subpath = moduleName.slice(NETSPECT_PKG.length + 1);
+            return context.resolveRequest(
+              // Resolve as if the request came from inside the checkout, so Metro applies
+              // its normal extension and platform search to the source tree.
+              { ...context, originModulePath: path.join(NETSPECT, 'package.json') },
+              `./src/${subpath || 'index'}`,
+              platform,
+            );
+          }
+          return context.resolveRequest(context, moduleName, platform);
+        },
         // Metro resolves bare imports relative to the importing file, so without this it
         // walks up from the sibling checkout, finds no node_modules, and fails — first on
         // the `@babel/runtime` helpers Babel injects into these files.
         nodeModulesPaths: [path.resolve(__dirname, 'node_modules')],
         extraNodeModules: {
-          'rn-netspect': NETSPECT,
-          // Force the app's single copies so there is no duplicate React.
+          // Pin the app's single copies so there is no duplicate React.
           react: path.resolve(__dirname, 'node_modules/react'),
           'react-native': path.resolve(__dirname, 'node_modules/react-native'),
         },
@@ -73,6 +91,17 @@ const localOverride = process.env.NETSPECT_LOCAL
   : {};
 
 module.exports = mergeConfig(getDefaultConfig(__dirname), localOverride);
+```
+
+Confirm which copy you are actually bundling by checking the sourcemap rather than trusting
+the flag — `sources` should name `rn-netspect/src/*.ts` with the override on and
+`node_modules/rn-netspect/dist/*.js` with it off:
+
+```sh
+npx react-native bundle --platform android --dev false --entry-file index.js \
+  --bundle-output /tmp/b.js --sourcemap-output /tmp/b.map
+node -e "console.log(JSON.parse(require('fs').readFileSync('/tmp/b.map','utf8'))
+  .sources.filter(s => /netspect/.test(s)).slice(0, 3))"
 ```
 
 ```sh
