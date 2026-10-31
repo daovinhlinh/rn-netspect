@@ -1,5 +1,12 @@
 import type { NetspectConfig } from './types';
 
+/**
+ * Reported in the HAR `creator` block. Written by `scripts/sync-version.js` from the
+ * `version` release hook, and asserted equal to package.json by the test suite — so drift
+ * is a failing test rather than a quietly wrong export. Do not edit by hand.
+ */
+export const VERSION = '0.1.1';
+
 export const DEFAULTS: NetspectConfig = {
   enabled: true,
   captureBodies: true,

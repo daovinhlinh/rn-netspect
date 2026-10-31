@@ -49,11 +49,15 @@ function Row({
       <View style={styles.rowBody}>
         <View style={styles.rowTop}>
           <Text style={styles.method}>{entry.method}</Text>
+          {/* Before the path, not after: a synthetic failure must never be read as a real
+              one while scanning the list. */}
+          {entry.simulated ? <Text style={styles.sim}>SIM</Text> : null}
           <Text style={styles.path} numberOfLines={1} ellipsizeMode="head">
             {shortPath(entry.url)}
           </Text>
         </View>
         <Text style={styles.meta} numberOfLines={1}>
+          {entry.simulated ? <Text style={styles.match}>{entry.simulated} · </Text> : null}
           {entry.outcome === 'pending' ? 'in flight' : `${entry.durationMs}ms`}
           {entry.responseBodyBytes > 0 ? ` · ${formatBytes(entry.responseBodyBytes)}` : ''}
           {attempt ? ` · ${attempt}` : ''}
@@ -180,6 +184,15 @@ const styles = StyleSheet.create({
   rowBody: { flex: 1, gap: 2 },
   rowTop: { flexDirection: 'row', alignItems: 'center', gap: S.sm },
   method: { color: T.accent, fontSize: 11, fontWeight: '800' },
+  sim: {
+    color: T.bg,
+    backgroundColor: T.warn,
+    fontSize: 9,
+    fontWeight: '800',
+    paddingHorizontal: 3,
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
   path: { color: T.text, fontSize: 13, flex: 1 },
   meta: { color: T.textDim, fontSize: 11 },
   match: { color: T.accent },

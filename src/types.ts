@@ -39,10 +39,55 @@ export type NetspectEntry = {
   /** True once the body was dropped to stay under the global byte budget. */
   bodyEvicted: boolean;
 
+  /**
+   * Set when netspect interfered with this request instead of just watching it. Carried
+   * into every export: a report full of network errors must not be mistaken for a real
+   * outage by whoever receives it.
+   */
+  simulated?: SimulatedFault;
+  /** Delay netspect added before the request left JS. Present alongside any `simulated`. */
+  simulatedLatencyMs?: number;
+
   /** Wall-clock start, for display and HAR export. */
   startedAt: number;
   durationMs: number;
 };
+
+/** What the simulator did to a request. `latency` still went to the real server. */
+export type SimulatedFault = 'latency' | 'offline' | 'timeout' | 'status';
+
+export type NetworkProfileId =
+  | 'online'
+  | 'offline'
+  | 'slow-3g'
+  | 'fast-3g'
+  | 'timeout'
+  | 'status'
+  | 'custom';
+
+export type NetworkFault = 'none' | 'offline' | 'timeout' | 'status';
+
+/** The single active simulation. In-memory only — an app restart is always a clean slate. */
+export type NetworkCondition = {
+  profile: NetworkProfileId;
+  /** Delay before the request leaves JS. Applies whether or not it is faulted. */
+  latencyMs: number;
+  /** 0..1 probability that a matching request is faulted. 1 for the named fault profiles. */
+  failureRate: number;
+  fault: NetworkFault;
+  /** For `fault: 'status'`. */
+  status: number;
+  statusBody: string | null;
+  /** Substring matched against the URL. Blank means every request. */
+  urlFilter: string | null;
+};
+
+/** What to do with one request. The only thing `decide` returns. */
+export type Verdict =
+  | { action: 'pass' }
+  | { action: 'delay'; ms: number }
+  | { action: 'fail'; kind: 'offline' | 'timeout'; afterMs: number }
+  | { action: 'respond'; status: number; body: string | null; afterMs: number };
 
 /** Everything the host app hands in. The library itself reads no native modules. */
 export type InfoProviders = {

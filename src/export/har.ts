@@ -1,3 +1,4 @@
+import { VERSION } from '../config';
 import { viewBody, viewHeaders } from '../core/redact';
 import { collectInfo } from '../info/collect';
 import type { HeaderMap, NetspectEntry } from '../types';
@@ -19,8 +20,10 @@ export function toHar(entries: NetspectEntry[], opts: { reveal?: boolean } = {})
     {
       log: {
         version: '1.2',
-        creator: { name: 'rn-netspect', version: '0.1.0' },
-        comment,
+        creator: { name: 'rn-netspect', version: VERSION },
+        comment: entries.some((entry) => entry.simulated)
+          ? `${comment} | WARNING: some entries were simulated by rn-netspect, not real network behaviour`
+          : comment,
         entries: entries
           .slice()
           .reverse()
@@ -81,6 +84,14 @@ export function toHar(entries: NetspectEntry[], opts: { reveal?: boolean } = {})
               ...(entry.correlationId ? { _netspectCorrelation: entry.correlationId } : {}),
               ...(entry.responseBodyTruncated ? { _netspectTruncated: true } : {}),
               ...(entry.bodyEvicted ? { _netspectEvicted: true } : {}),
+              // `comment` rather than only a `_netspect*` field: HAR viewers render it,
+              // whereas custom underscore keys are usually hidden.
+              ...(entry.simulated
+                ? {
+                    comment: `SIMULATED BY RN-NETSPECT (${entry.simulated}) — not real network behaviour`,
+                    _netspectSimulated: entry.simulated,
+                  }
+                : {}),
             };
           }),
       },

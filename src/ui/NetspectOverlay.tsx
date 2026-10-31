@@ -2,17 +2,19 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { getConfig } from '../config';
+import { describeCondition } from '../core/networkConditions';
 import { isCapturing } from '../core/xhrPatch';
 import { FloatingBubble } from './FloatingBubble';
 import { InfoPanel } from './InfoPanel';
+import { NetworkConditionsPanel } from './NetworkConditionsPanel';
 import { Btn, Segmented } from './parts/primitives';
 import { RequestDetail } from './RequestDetail';
 import { RequestList } from './RequestList';
 import { SettingsPanel } from './SettingsPanel';
 import { S, T } from './theme';
-import { useEntries, useEntry } from './useNetspect';
+import { useEntries, useEntry, useNetworkCondition } from './useNetspect';
 
-const TABS = ['Network', 'Info', 'Settings'] as const;
+const TABS = ['Network', 'Simulate', 'Info', 'Settings'] as const;
 type Tab = (typeof TABS)[number];
 
 /**
@@ -29,6 +31,10 @@ export function NetspectOverlay() {
 
   const entries = useEntries();
   const entry = useEntry(selected);
+  const condition = useNetworkCondition();
+  // A forgotten simulation looks exactly like a real bug, so it is surfaced on the bubble
+  // and in the top bar rather than only on the tab that set it.
+  const simulating = describeCondition(condition);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const showToast = useCallback((message: string) => {
@@ -50,7 +56,11 @@ export function NetspectOverlay() {
 
   return (
     <>
-      <FloatingBubble count={entries.length} onPress={() => setOpen(true)} />
+      <FloatingBubble
+        count={entries.length}
+        alert={simulating !== null}
+        onPress={() => setOpen(true)}
+      />
 
       <Modal
         visible={open}
@@ -70,43 +80,51 @@ export function NetspectOverlay() {
             <View style={styles.topBar}>
               <Text style={styles.title}>netspect</Text>
               {!capturing && <Text style={styles.paused}>paused</Text>}
+              {simulating && (
+                <Text style={styles.simulating} numberOfLines={1}>
+                  ⚡ {simulating}
+                </Text>
+              )}
               <View style={styles.topBarRight}>
                 <Btn label="Close" onPress={() => setOpen(false)} />
               </View>
             </View>
 
-            {selected && entry ? (
+            {/* Kept mounted (just hidden) behind the detail view, so switching back
+                preserves RequestList's scroll position instead of remounting it. */}
+            <View style={[styles.flexFill, selected && entry ? styles.hidden : null]}>
+              <View style={styles.tabs}>
+                <Segmented
+                  tabs={TABS}
+                  value={tab}
+                  onChange={(next) => {
+                    setTab(next);
+                    setSelected(null);
+                  }}
+                />
+              </View>
+
+              {tab === 'Network' && <RequestList entries={entries} onSelect={setSelected} />}
+              {tab === 'Simulate' && <NetworkConditionsPanel onToast={showToast} />}
+              {tab === 'Info' && <InfoPanel />}
+              {tab === 'Settings' && (
+                <SettingsPanel
+                  reveal={reveal}
+                  onRevealChange={setReveal}
+                  capturing={capturing}
+                  onCapturingChange={setCapturing}
+                  onToast={showToast}
+                />
+              )}
+            </View>
+
+            {selected && entry && (
               <RequestDetail
                 entry={entry}
                 reveal={reveal}
                 onBack={() => setSelected(null)}
                 onToast={showToast}
               />
-            ) : (
-              <>
-                <View style={styles.tabs}>
-                  <Segmented
-                    tabs={TABS}
-                    value={tab}
-                    onChange={(next) => {
-                      setTab(next);
-                      setSelected(null);
-                    }}
-                  />
-                </View>
-
-                {tab === 'Network' && <RequestList entries={entries} onSelect={setSelected} />}
-                {tab === 'Info' && <InfoPanel />}
-                {tab === 'Settings' && (
-                  <SettingsPanel
-                    reveal={reveal}
-                    onRevealChange={setReveal}
-                    capturing={capturing}
-                    onCapturingChange={setCapturing}
-                    onToast={showToast}
-                  />
-                )}
-              </>
             )}
 
             {toast && (
@@ -154,8 +172,12 @@ const styles = StyleSheet.create({
   },
   title: { color: T.text, fontSize: 15, fontWeight: '800', letterSpacing: 0.5 },
   paused: { color: T.warn, fontSize: 11, fontWeight: '700' },
+  // flexShrink so a long URL filter is ellipsised rather than pushing Close off-screen.
+  simulating: { color: T.warn, fontSize: 11, fontWeight: '700', flexShrink: 1 },
   topBarRight: { marginLeft: 'auto' },
   tabs: { paddingHorizontal: S.md, paddingBottom: S.md },
+  flexFill: { flex: 1 },
+  hidden: { display: 'none' },
 
   toast: {
     position: 'absolute',

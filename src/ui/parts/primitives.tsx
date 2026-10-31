@@ -137,6 +137,109 @@ export function SectionTitle({ children }: { children: string }) {
   return <Text style={styles.sectionTitle}>{children}</Text>;
 }
 
+/** A vertical single-choice row. `Segmented` is horizontal and runs out of width past ~4. */
+export function RadioRow({
+  label,
+  hint,
+  selected,
+  onPress,
+}: {
+  label: string;
+  hint?: string;
+  selected: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [styles.radioRow, pressed && { opacity: 0.6 }]}
+      accessibilityRole="radio"
+      accessibilityState={{ selected }}
+    >
+      <Text style={[styles.radioDot, selected && { color: T.accent }]}>
+        {selected ? '◉' : '○'}
+      </Text>
+      <View style={styles.radioText}>
+        <Text style={[styles.radioLabel, selected && { color: T.text }]}>{label}</Text>
+        {hint ? <Text style={styles.radioHint}>{hint}</Text> : null}
+      </View>
+    </Pressable>
+  );
+}
+
+/**
+ * A labelled numeric field. Keeps its own draft string so a half-typed value is not
+ * round-tripped through `Number()` on every keystroke — that would make "20" unreachable by
+ * rewriting it to 2 the moment you typed the first digit.
+ */
+export function NumField({
+  label,
+  value,
+  suffix,
+  onCommit,
+}: {
+  label: string;
+  value: number;
+  suffix?: string;
+  onCommit: (next: number) => void;
+}) {
+  const [draft, setDraft] = React.useState<string | null>(null);
+
+  const commit = () => {
+    if (draft === null) return;
+    const parsed = Number(draft);
+    setDraft(null);
+    if (Number.isFinite(parsed) && parsed >= 0) onCommit(parsed);
+  };
+
+  return (
+    <View style={styles.fieldRow}>
+      <Text style={styles.fieldLabel}>{label}</Text>
+      <TextInput
+        value={draft ?? String(value)}
+        onChangeText={setDraft}
+        onEndEditing={commit}
+        onBlur={commit}
+        onSubmitEditing={commit}
+        keyboardType="number-pad"
+        returnKeyType="done"
+        selectTextOnFocus
+        placeholderTextColor={T.textDim}
+        style={styles.fieldInput}
+      />
+      {suffix ? <Text style={styles.fieldSuffix}>{suffix}</Text> : null}
+    </View>
+  );
+}
+
+/** A labelled free-text field, for things like the URL filter. */
+export function TextField({
+  label,
+  value,
+  placeholder,
+  onChangeText,
+}: {
+  label: string;
+  value: string;
+  placeholder?: string;
+  onChangeText: (next: string) => void;
+}) {
+  return (
+    <View style={styles.fieldRow}>
+      <Text style={styles.fieldLabel}>{label}</Text>
+      <TextInput
+        value={value}
+        onChangeText={onChangeText}
+        placeholder={placeholder}
+        placeholderTextColor={T.textDim}
+        autoCapitalize="none"
+        autoCorrect={false}
+        style={[styles.fieldInput, styles.fieldInputWide]}
+      />
+    </View>
+  );
+}
+
 /** A section whose body can be tucked away, with the item count kept visible when closed. */
 export function Collapsible({
   title,
@@ -231,6 +334,28 @@ const styles = StyleSheet.create({
   },
   // The twisty row supplies its own vertical padding, so drop the standalone margin.
   sectionTitleInline: { marginBottom: 0 },
+
+  radioRow: { flexDirection: 'row', alignItems: 'center', gap: S.md, paddingVertical: S.sm },
+  radioDot: { color: T.textDim, fontSize: 14, width: 16 },
+  radioText: { flex: 1, gap: 1 },
+  radioLabel: { color: T.textDim, fontSize: 13, fontWeight: '600' },
+  radioHint: { color: T.textDim, fontSize: 11, opacity: 0.8 },
+
+  fieldRow: { flexDirection: 'row', alignItems: 'center', gap: S.sm, paddingVertical: S.xs },
+  fieldLabel: { color: T.textDim, fontSize: 12, flex: 1 },
+  fieldInput: {
+    backgroundColor: T.surfaceAlt,
+    borderRadius: 6,
+    paddingHorizontal: S.sm,
+    paddingVertical: S.xs,
+    color: T.text,
+    fontSize: 13,
+    fontFamily: mono,
+    minWidth: 72,
+    textAlign: 'right',
+  },
+  fieldInputWide: { flex: 2, textAlign: 'left' },
+  fieldSuffix: { color: T.textDim, fontSize: 11, width: 24 },
 
   collapsibleHead: { flexDirection: 'row', alignItems: 'center', gap: S.sm, paddingVertical: S.sm },
   twisty: { color: T.textDim, fontSize: 11, width: 12 },

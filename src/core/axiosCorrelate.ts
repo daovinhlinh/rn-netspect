@@ -1,10 +1,10 @@
-import { nextId } from './id';
+import { nextId } from "./id";
 
 /**
  * Stamped by `attachAxios`, recorded by the XHR patch, and stripped before the request
  * is sent — it never reaches the server.
  */
-export const CORRELATION_HEADER = 'x-netspect-correlation';
+export const CORRELATION_HEADER = "x-netspect-correlation";
 
 type InterceptorHandle = number;
 
@@ -19,13 +19,14 @@ export type AxiosInstanceLike = {
 
 function readHeader(headers: any): string | undefined {
   if (!headers) return undefined;
-  if (typeof headers.get === 'function') return headers.get(CORRELATION_HEADER) ?? undefined;
+  if (typeof headers.get === "function")
+    return headers.get(CORRELATION_HEADER) ?? undefined;
   return headers[CORRELATION_HEADER];
 }
 
 function writeHeader(headers: any, value: string): void {
   if (!headers) return;
-  if (typeof headers.set === 'function') headers.set(CORRELATION_HEADER, value);
+  if (typeof headers.set === "function") headers.set(CORRELATION_HEADER, value);
   else headers[CORRELATION_HEADER] = value;
 }
 

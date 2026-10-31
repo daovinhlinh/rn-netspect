@@ -111,6 +111,14 @@ function SummaryTab({
             : []),
         ]}
       />
+      {entry.simulated ? (
+        <Text style={styles.simNote}>
+          ⚡ netspect simulated this: <Text style={styles.simKind}>{entry.simulated}</Text>
+          {entry.simulated === 'latency'
+            ? ` — the request was real, delayed by ${entry.simulatedLatencyMs ?? 0}ms.`
+            : ' — no request was sent, and this response is synthetic.'}
+        </Text>
+      ) : null}
       <View style={styles.actions}>
         <Btn
           label="Copy response"
@@ -319,6 +327,16 @@ const styles = StyleSheet.create({
 
   gap: { height: S.lg },
   actions: { flexDirection: 'row', gap: S.sm, marginTop: S.lg, flexWrap: 'wrap' },
+  simNote: {
+    color: T.warn,
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: S.sm,
+    borderLeftWidth: 2,
+    borderLeftColor: T.warn,
+    paddingLeft: S.sm,
+  },
+  simKind: { fontWeight: '800' },
   warn: { color: T.warn, fontSize: 12, marginTop: S.sm },
   dim: { color: T.textDim, fontSize: 12, fontStyle: 'italic' },
 });

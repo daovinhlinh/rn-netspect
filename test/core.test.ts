@@ -2,9 +2,21 @@
  * Exercises the capture core against a fake XMLHttpRequest that mimics the bits of RN's
  * implementation the patch depends on — including the two throwing/hazardous getters.
  */
-import { setConfig } from '../src/config';
+import { setConfig, VERSION } from '../src/config';
 import { attachAxios, CORRELATION_HEADER } from '../src/core/axiosCorrelate';
+import { applyFault } from '../src/core/faults';
 import { Netspect } from '../src/core/netspect';
+import {
+  decide,
+  DEFAULT_CONDITION,
+  describeCondition,
+  getNetworkCondition,
+  isGlobalOffline,
+  onNetworkConditionChange,
+  PROFILE_PRESETS,
+  resetNetworkCondition,
+  setNetworkCondition,
+} from '../src/core/networkConditions';
 import { store } from '../src/core/store';
 import { installXhrPatch } from '../src/core/xhrPatch';
 import { MASK, viewBody, viewHeaders } from '../src/core/redact';
@@ -49,24 +61,66 @@ type Listener = () => void;
 /** Mirrors RN's XMLHttpRequest closely enough to catch the real hazards. */
 class FakeXHR {
   static DONE = 4;
+  /** Counts sends that reached "the network", so a faulted request can be proven not to. */
+  static sends = 0;
+
+  DONE = 4;
+  readyState = 0;
   responseType = '';
   status = 0;
   responseURL?: string;
   responseHeaders: Record<string, string> = {};
   _response: any = '';
   _sentHeaders: Record<string, string> = {};
+  _aborted = false;
+  _hasError = false;
+  _timedOut = false;
+  _requestId: number | null = null;
   /** Set if anyone subscribes to the two events that flip RN's bridge flag. */
   incrementalEventsRequested = false;
+  /** Every event this instance dispatched, in order — fault tests assert on the sequence. */
+  dispatched: string[] = [];
 
   private listeners = new Map<string, Set<Listener>>();
 
-  open(_method: string, _url: string) {}
+  open(_method: string, _url: string) {
+    this.readyState = 1;
+  }
 
   setRequestHeader(name: string, value: string) {
     this._sentHeaders[name] = value;
   }
 
-  send(_body?: any) {}
+  send(_body?: any) {
+    FakeXHR.sends++;
+  }
+
+  setResponseHeaders(headers: Record<string, string>) {
+    this.responseHeaders = headers;
+  }
+
+  /** RN's own event-dispatch logic, which is what the fault injector relies on. */
+  setReadyState(next: number) {
+    this.readyState = next;
+    this.dispatch('readystatechange');
+    if (next === FakeXHR.DONE) {
+      if (this._aborted) this.dispatch('abort');
+      else if (this._hasError) this.dispatch(this._timedOut ? 'timeout' : 'error');
+      else this.dispatch('load');
+      this.dispatch('loadend');
+    }
+  }
+
+  __didCompleteResponse(requestId: number | null, error: string, timedOut: boolean) {
+    if (requestId !== this._requestId) return;
+    if (error) {
+      if (this.responseType === '' || this.responseType === 'text') this._response = error;
+      this._hasError = true;
+      if (timedOut) this._timedOut = true;
+    }
+    this._requestId = null;
+    this.setReadyState(FakeXHR.DONE);
+  }
 
   addEventListener(type: string, listener: Listener) {
     if (type === 'readystatechange' || type === 'progress') {
@@ -109,6 +163,7 @@ class FakeXHR {
   }
 
   dispatch(type: string) {
+    this.dispatched.push(type);
     for (const listener of this.listeners.get(type) ?? []) listener();
   }
 
@@ -783,6 +838,281 @@ async function main() {
     );
     check('no warning when reveal is on', isUnredactedFallback(cutSecret, true) === false);
     check('no warning for a normal tree', isUnredactedFallback(tree, false) === false);
+  }
+
+  console.log('\n— network conditions: decide() —');
+  {
+    const online = { ...DEFAULT_CONDITION };
+    const seeded = (...values: number[]) => {
+      let i = 0;
+      return () => values[i++ % values.length] ?? 0;
+    };
+    const never = () => {
+      throw new Error('rand must not be consulted for a deterministic profile');
+    };
+    const url = 'https://api.example.com/v1/stations';
+
+    check('online passes', decide(url, online, never).action === 'pass');
+
+    const offline = { ...online, profile: 'offline' as const, ...PROFILE_PRESETS.offline };
+    const offlineVerdict = decide(url, offline, never);
+    check('offline fails', offlineVerdict.action === 'fail', offlineVerdict);
+    check(
+      'offline fault kind is offline',
+      offlineVerdict.action === 'fail' && offlineVerdict.kind === 'offline',
+    );
+
+    const slow = { ...online, profile: 'slow-3g' as const, ...PROFILE_PRESETS['slow-3g'] };
+    const slowVerdict = decide(url, slow, never);
+    check(
+      'slow-3g delays by the preset',
+      slowVerdict.action === 'delay' && slowVerdict.ms === 2000,
+      slowVerdict,
+    );
+
+    const timeout = { ...online, profile: 'timeout' as const, ...PROFILE_PRESETS.timeout };
+    check(
+      'timeout fault kind is timeout',
+      (() => {
+        const v = decide(url, timeout, never);
+        return v.action === 'fail' && v.kind === 'timeout';
+      })(),
+    );
+
+    const forced = { ...online, profile: 'status' as const, ...PROFILE_PRESETS.status, status: 401 };
+    const forcedVerdict = decide(url, forced, never);
+    check(
+      'forced status responds with that status',
+      forcedVerdict.action === 'respond' && forcedVerdict.status === 401,
+      forcedVerdict,
+    );
+
+    // Scoping.
+    const scoped = { ...offline, urlFilter: '/v1/stations' };
+    check('filter matches', decide(url, scoped, never).action === 'fail');
+    check(
+      'filter spares other urls',
+      decide('https://api.example.com/v1/identity/refresh-token', scoped, never).action === 'pass',
+    );
+    // The one URL class that must never be faulted, filter or not.
+    check(
+      'metro traffic is never faulted',
+      decide('http://localhost:8081/symbolicate', offline, never).action === 'pass',
+    );
+
+    // Probability. 0.3 means rand() < 0.3 faults; the rest only get the latency (none here).
+    const flaky = { ...online, profile: 'custom' as const, fault: 'offline' as const, failureRate: 0.3 };
+    const rand = seeded(0.1, 0.9, 0.29, 0.31);
+    const outcomes = [0, 1, 2, 3].map(() => decide(url, flaky, rand).action);
+    check(
+      'failure rate faults exactly the draws below it',
+      JSON.stringify(outcomes) === JSON.stringify(['fail', 'pass', 'fail', 'pass']),
+      outcomes,
+    );
+
+    // A fault that does not fire still has to honour the latency.
+    const flakySlow = { ...flaky, latencyMs: 250 };
+    const spared = decide(url, flakySlow, seeded(0.9));
+    check(
+      'a spared request still gets the latency',
+      spared.action === 'delay' && spared.ms === 250,
+      spared,
+    );
+  }
+
+  console.log('\n— network conditions: state —');
+  {
+    resetNetworkCondition();
+    check('starts online', getNetworkCondition().profile === 'online');
+    check('nothing to describe when online', describeCondition(getNetworkCondition()) === null);
+
+    setNetworkCondition({ profile: 'status', status: 401 });
+    check('preset applies under the explicit patch', getNetworkCondition().fault === 'status');
+    check('explicit patch wins over the preset', getNetworkCondition().status === 401);
+
+    // Touching a knob means the named profile no longer describes the state.
+    setNetworkCondition({ latencyMs: 750 });
+    check('editing a knob switches to custom', getNetworkCondition().profile === 'custom');
+
+    // ...but narrowing the scope of a profile leaves it alone.
+    setNetworkCondition({ profile: 'offline', ...PROFILE_PRESETS.offline });
+    setNetworkCondition({ urlFilter: '/v1/stations' });
+    check('scoping does not switch to custom', getNetworkCondition().profile === 'offline');
+
+    check('a scoped outage is not global offline', isGlobalOffline() === false);
+    setNetworkCondition({ urlFilter: null });
+    check('an unscoped outage is global offline', isGlobalOffline() === true);
+    check(
+      'describe mentions the fault',
+      describeCondition(getNetworkCondition()) === 'offline',
+      describeCondition(getNetworkCondition()),
+    );
+
+    let seen: string | null = 'unset';
+    const stop = onNetworkConditionChange((next) => {
+      seen = next.profile;
+    });
+    setNetworkCondition({ profile: 'fast-3g', ...PROFILE_PRESETS['fast-3g'] });
+    check('subscribers are notified', seen === 'fast-3g', seen);
+    stop();
+    setNetworkCondition({ profile: 'online', ...PROFILE_PRESETS.online });
+    check('unsubscribe stops notifications', seen === 'fast-3g', seen);
+
+    resetNetworkCondition();
+    check('reset returns to online', isGlobalOffline() === false);
+  }
+
+  console.log('\n— network conditions: injection —');
+  {
+    const sendsBefore = FakeXHR.sends;
+    store.clear();
+    await tick();
+
+    setNetworkCondition({ profile: 'offline', ...PROFILE_PRESETS.offline });
+    const xhr = request('GET', 'https://api.example.com/v1/stations');
+    await tick();
+
+    // The assertion that matters most: a faulted request must not reach the network.
+    check('a faulted request never sends', FakeXHR.sends === sendsBefore, {
+      before: sendsBefore,
+      after: FakeXHR.sends,
+    });
+    check(
+      'offline dispatches error then loadend',
+      JSON.stringify(xhr.dispatched) === JSON.stringify(['readystatechange', 'error', 'loadend']),
+      xhr.dispatched,
+    );
+    check('offline leaves status at 0', xhr.status === 0, xhr.status);
+
+    let entry = Netspect.getEntries()[0]!;
+    check('the entry is still logged', entry?.url.endsWith('/v1/stations') === true);
+    check('the entry is marked simulated', entry.simulated === 'offline', entry.simulated);
+    check('the entry outcome is error', entry.outcome === 'error', entry.outcome);
+
+    const report = toEntryText(entry);
+    check('the report shouts about the simulation', report.includes('!! SIMULATED (offline)'));
+    check(
+      'the report explains no request was sent',
+      report.includes('no request was sent'),
+    );
+    const har = JSON.parse(toHar([entry]));
+    check(
+      'HAR carries a renderable comment',
+      String(har.log.entries[0].comment).includes('SIMULATED'),
+      har.log.entries[0].comment,
+    );
+
+    // Timeout is a different error class, which is the whole reason it exists.
+    store.clear();
+    await tick();
+    setNetworkCondition({ profile: 'timeout', ...PROFILE_PRESETS.timeout });
+    const tmo = request('GET', 'https://api.example.com/v1/stations');
+    await tick();
+    check(
+      'timeout dispatches timeout, not error',
+      tmo.dispatched.includes('timeout') && !tmo.dispatched.includes('error'),
+      tmo.dispatched,
+    );
+    check('timeout outcome is timeout', Netspect.getEntries()[0]?.outcome === 'timeout');
+
+    // Forced status: a synthetic but complete response.
+    store.clear();
+    await tick();
+    setNetworkCondition({
+      profile: 'status',
+      status: 503,
+      statusBody: JSON.stringify({ success: false, message: 'maintenance' }),
+    });
+    const forced = request('GET', 'https://api.example.com/v1/stations');
+    await tick();
+    check(
+      'forced status dispatches load',
+      forced.dispatched.includes('load') && !forced.dispatched.includes('error'),
+      forced.dispatched,
+    );
+    check('forced status reaches the xhr', forced.status === 503, forced.status);
+    check(
+      'forced body is readable as responseText',
+      String(forced.responseText).includes('maintenance'),
+    );
+    check(
+      'the fake is labelled in the response headers',
+      forced.responseHeaders['x-netspect-simulated'] === 'status',
+      forced.responseHeaders,
+    );
+    entry = Netspect.getEntries()[0]!;
+    check('forced status is captured', entry.status === 503, entry.status);
+    check('forced status is marked', entry.simulated === 'status', entry.simulated);
+
+    // Latency lets the request through, just late.
+    store.clear();
+    await tick();
+    const sendsBeforeDelay = FakeXHR.sends;
+    setNetworkCondition({ profile: 'custom', fault: 'none', latencyMs: 20 });
+    request('GET', 'https://api.example.com/v1/stations');
+    await tick();
+    check('latency has not sent yet', FakeXHR.sends === sendsBeforeDelay, FakeXHR.sends);
+    check('latency is marked on the entry', Netspect.getEntries()[0]?.simulated === 'latency');
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    check('latency sends after the delay', FakeXHR.sends === sendsBeforeDelay + 1, FakeXHR.sends);
+
+    // Cancelling during the delay must not leave the entry stuck pending forever.
+    store.clear();
+    await tick();
+    setNetworkCondition({ profile: 'custom', fault: 'none', latencyMs: 20 });
+    const cancelled = request('GET', 'https://api.example.com/v1/cancel-me');
+    cancelled._aborted = true;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    check(
+      'a request cancelled mid-delay is not left pending',
+      Netspect.getEntries()[0]?.outcome === 'cancelled',
+      Netspect.getEntries()[0]?.outcome,
+    );
+
+    // Still no subscription to the bridge-flag events, even though faults dispatch one.
+    check('injection did not subscribe to readystatechange', !xhr.incrementalEventsRequested);
+
+    resetNetworkCondition();
+  }
+
+  console.log('\n— network conditions: safety —');
+  {
+    // An XHR without RN's completion hook must be sent for real, never stranded.
+    setNetworkCondition({ profile: 'offline', ...PROFILE_PRESETS.offline });
+    const bare: any = { _aborted: false, readyState: 1, DONE: 4 };
+    check(
+      'applyFault reports failure when it cannot inject',
+      applyFault(bare, { action: 'fail', kind: 'offline', afterMs: 0 }) === false,
+    );
+    // An already-finished request is left alone, and reported as handled so nothing is sent.
+    const done: any = { _aborted: false, readyState: 4, DONE: 4, __didCompleteResponse() {} };
+    check('applyFault is a no-op on a finished request', applyFault(done, {
+      action: 'fail',
+      kind: 'offline',
+      afterMs: 0,
+    }) === true);
+    check('applyFault ignores a pass verdict', applyFault(done, { action: 'pass' }) === false);
+
+    // Disabling netspect disables the simulator too.
+    setConfig({ enabled: false });
+    check(
+      'nothing is faulted while disabled',
+      decide('https://api.example.com/v1/stations', getNetworkCondition(), () => 0).action ===
+        'pass',
+    );
+    check('isGlobalOffline is false while disabled', isGlobalOffline() === false);
+    setConfig({ enabled: true });
+    resetNetworkCondition();
+  }
+
+  console.log('\n— version —');
+  {
+    // Keeps the HAR `creator.version` honest without relying on anyone remembering.
+    const pkg = require('../package.json');
+    check(`VERSION matches package.json (${pkg.version})`, VERSION === pkg.version, {
+      VERSION,
+      pkg: pkg.version,
+    });
   }
 
   console.log('\n— uninstall restores prototype —');

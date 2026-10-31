@@ -1,7 +1,14 @@
 import { getConfig, setConfig } from '../config';
-import type { ManualEntry, NetspectConfig, NetspectEntry } from '../types';
+import type { ManualEntry, NetspectConfig, NetspectEntry, NetworkCondition } from '../types';
 import { attachAxios, type AxiosInstanceLike } from './axiosCorrelate';
 import { nextId } from './id';
+import {
+  getNetworkCondition,
+  isGlobalOffline,
+  onNetworkConditionChange,
+  resetNetworkCondition,
+  setNetworkCondition,
+} from './networkConditions';
 import { store } from './store';
 import { installXhrPatch, pauseCapture, resumeCapture, uninstallXhrPatch } from './xhrPatch';
 
@@ -54,6 +61,23 @@ export const Netspect = {
   clear: () => store.clear(),
   getEntries: (): NetspectEntry[] => store.getSnapshot(),
   stats: () => store.stats(),
+
+  /** The active simulation. Faults are applied even while capture is paused. */
+  getNetworkCondition,
+  /**
+   * Merges a patch. Naming a `profile` applies its preset first, so
+   * `{ profile: 'status', status: 401 }` means "force 401"; changing a knob without naming
+   * a profile switches it to `custom`.
+   */
+  setNetworkCondition: (patch: Partial<NetworkCondition>) => setNetworkCondition(patch),
+  resetNetworkCondition,
+  /**
+   * Fires on every change. For conditions the library cannot reach on its own — a native
+   * WebSocket, say — subscribe here and drop the connection yourself.
+   */
+  onNetworkConditionChange,
+  /** True only for an unfiltered simulated outage; a URL-scoped one is not "offline". */
+  isGlobalOffline,
   /** Restores the original prototype methods. Mainly for tests. */
   uninstall: uninstallXhrPatch,
 };

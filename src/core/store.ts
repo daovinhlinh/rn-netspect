@@ -1,5 +1,5 @@
-import { getConfig } from '../config';
-import type { NetspectEntry } from '../types';
+import { getConfig } from "../config";
+import type { NetspectEntry } from "../types";
 
 /** Newest first. Identity changes only on mutation, so it is safe as a snapshot. */
 let entries: NetspectEntry[] = [];
@@ -39,12 +39,21 @@ function bodyLength(entry: NetspectEntry): number {
  */
 function evictBodies(protectedId: string): void {
   const { maxTotalBodyBytes } = getConfig();
-  for (let i = entries.length - 1; i >= 0 && bodyBudget > maxTotalBodyBytes; i--) {
+  for (
+    let i = entries.length - 1;
+    i >= 0 && bodyBudget > maxTotalBodyBytes;
+    i--
+  ) {
     const entry = entries[i];
     if (!entry || entry.id === protectedId || entry.bodyEvicted) continue;
     const freed = bodyLength(entry);
     if (freed === 0) continue;
-    const evicted: NetspectEntry = { ...entry, requestBody: null, responseBody: null, bodyEvicted: true };
+    const evicted: NetspectEntry = {
+      ...entry,
+      requestBody: null,
+      responseBody: null,
+      bodyEvicted: true,
+    };
     entries[i] = evicted;
     index.set(evicted.id, evicted);
     bodyBudget -= freed;

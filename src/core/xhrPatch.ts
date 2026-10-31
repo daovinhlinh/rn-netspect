@@ -1,11 +1,16 @@
 import { getConfig, isIgnoredContentType, isIgnoredUrl } from '../config';
-import type { HeaderMap, NetspectEntry, Outcome } from '../types';
+import type { HeaderMap, NetspectEntry, Outcome, Verdict } from '../types';
 import { CORRELATION_HEADER } from './axiosCorrelate';
 import { readRequestBody, readResponseBody, readResponseHeaders } from './bodies';
+import { applyFault } from './faults';
 import { nextId, now } from './id';
+import { decide, getNetworkCondition } from './networkConditions';
 import { store } from './store';
 
 const MARK = '__netspect_patched__';
+
+/** Shared because a `Verdict` is only ever read. */
+const PASS: Verdict = { action: 'pass' };
 
 type Meta = {
   id: string;
@@ -89,15 +94,57 @@ export function installXhrPatch(): () => void {
   };
 
   XHR.prototype.send = function patchedSend(body?: any) {
+    let verdict: Verdict = PASS;
+    let logged: string | null = null;
+
     try {
       const meta = metas.get(this);
-      if (meta && getConfig().enabled && !paused && !isIgnoredUrl(meta.url)) {
-        track(this, meta, body);
+      if (meta) {
+        if (getConfig().enabled && !paused && !isIgnoredUrl(meta.url)) {
+          track(this, meta, body);
+          logged = meta.id;
+        }
+        // Decided independently of capture: pausing the log should not also stop the
+        // simulator, and vice versa.
+        verdict = decide(meta.url, getNetworkCondition(), Math.random);
+        if (logged) markSimulated(logged, verdict);
       }
     } catch {
-      /* ignore */
+      // Never let instrumentation break a real request — and never let it fault one
+      // by accident either.
+      verdict = PASS;
     }
-    return originalSend.call(this, body);
+
+    if (verdict.action === 'pass') return originalSend.call(this, body);
+
+    if (verdict.action === 'delay') {
+      // The real request still goes out, just late.
+      setTimeout(() => {
+        try {
+          if (this._aborted) {
+            // `abort()` dispatches nothing while the request is merely OPENED, so without
+            // this the entry would sit at `pending` for the rest of the session.
+            if (logged) store.update(logged, { outcome: 'cancelled' });
+            return;
+          }
+          originalSend.call(this, body);
+        } catch {
+          /* ignore */
+        }
+      }, verdict.ms);
+      return undefined;
+    }
+
+    // fail / respond: the network is never touched unless injection turns out to be
+    // impossible, in which case the request is sent for real rather than stranded.
+    setTimeout(() => {
+      try {
+        if (!applyFault(this, verdict)) originalSend.call(this, body);
+      } catch {
+        /* ignore */
+      }
+    }, verdict.afterMs);
+    return undefined;
   };
 
   Object.defineProperty(XHR.prototype, MARK, {
@@ -118,6 +165,26 @@ export function installXhrPatch(): () => void {
 
 export function uninstallXhrPatch(): void {
   uninstall?.();
+}
+
+/**
+ * Records what the simulator did. `finish` later patches the same entry without touching
+ * these fields, so the mark survives to the UI and every export.
+ */
+function markSimulated(id: string, verdict: Verdict): void {
+  switch (verdict.action) {
+    case 'delay':
+      store.update(id, { simulated: 'latency', simulatedLatencyMs: verdict.ms });
+      return;
+    case 'fail':
+      store.update(id, { simulated: verdict.kind, simulatedLatencyMs: verdict.afterMs });
+      return;
+    case 'respond':
+      store.update(id, { simulated: 'status', simulatedLatencyMs: verdict.afterMs });
+      return;
+    default:
+      return;
+  }
 }
 
 function track(xhr: any, meta: Meta, body: unknown): void {

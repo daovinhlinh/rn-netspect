@@ -26,9 +26,12 @@ const lastPosition = { x: -1, y: -1 };
 
 export function FloatingBubble({
   count,
+  alert,
   onPress,
 }: {
   count: number;
+  /** Tints the bubble to warn that netspect is interfering with traffic, not just watching. */
+  alert?: boolean;
   onPress: () => void;
 }) {
   const { width, height } = useWindowDimensions();
@@ -138,10 +141,11 @@ export function FloatingBubble({
         {...responder.panHandlers}
         style={[
           styles.bubble,
+          alert && styles.bubbleAlert,
           { transform: [...pan.getTranslateTransform(), { scale }] },
         ]}
       >
-        <Text style={styles.glyph}>⇅</Text>
+        <Text style={styles.glyph}>{alert ? "⚡" : "⇅"}</Text>
         {count > 0 && (
           <View style={styles.badge}>
             <Text style={styles.badgeLabel} numberOfLines={1}>
@@ -174,6 +178,8 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 4 },
   },
+  /** The one cue visible without opening the sheet, so it has to be unmistakable. */
+  bubbleAlert: { backgroundColor: T.warn, borderColor: "rgba(0,0,0,0.3)" },
   glyph: { color: "#FFFFFF", fontSize: 22, fontWeight: "700" },
   badge: {
     position: "absolute",

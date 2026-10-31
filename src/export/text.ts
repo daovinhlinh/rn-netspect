@@ -24,6 +24,11 @@ export const statusLabel = (entry: NetspectEntry): string => {
   }
 };
 
+const simulatedNote = (entry: NetspectEntry): string =>
+  entry.simulated === 'latency'
+    ? `the request was real, delayed by ${entry.simulatedLatencyMs ?? 0}ms by netspect`
+    : 'no request was sent; this response was synthesised by netspect';
+
 export function toEntryText(entry: NetspectEntry, opts: { reveal?: boolean } = {}): string {
   const reveal = opts.reveal ?? false;
   const lines: string[] = [
@@ -31,6 +36,9 @@ export function toEntryText(entry: NetspectEntry, opts: { reveal?: boolean } = {
     `${statusLabel(entry)} · ${entry.durationMs}ms · ${new Date(entry.startedAt).toISOString()}`,
   ];
   if (entry.correlationId) lines.push(`correlation: ${entry.correlationId}`);
+  // Loud, and above the payload: whoever reads this report must not take a simulated
+  // outage for a real one.
+  if (entry.simulated) lines.push(`!! SIMULATED (${entry.simulated}) — ${simulatedNote(entry)}`);
   lines.push('', 'REQUEST HEADERS', headerBlock(entry.requestHeaders, reveal));
   if (entry.requestBody) {
     lines.push('', 'REQUEST BODY', prettyJson(viewBody(entry.requestBody, reveal)));
@@ -60,9 +68,18 @@ export function toSessionText(entries: NetspectEntry[], opts: { reveal?: boolean
     .map((entry, i) => `${'='.repeat(70)}\n#${i + 1}\n${toEntryText(entry, opts)}`)
     .join('\n\n');
 
+  const simulated = entries.filter((entry) => entry.simulated).length;
+
   return [
     `rn-netspect session · ${new Date().toISOString()}`,
     `${entries.length} request(s)`,
+    // Up top as well as per-entry, so the caveat is not missed by someone who skims.
+    ...(simulated > 0
+      ? [
+          `!! ${simulated} of these were SIMULATED by netspect, not real network behaviour.`,
+          '   Each is marked individually below.',
+        ]
+      : []),
     '',
     info,
     '',
